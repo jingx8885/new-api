@@ -204,6 +204,9 @@ func (e *NewAPIError) ToOpenAIError() OpenAIError {
 	if e.errorCode != ErrorCodeCountTokenFailed {
 		result.Message = common.MaskSensitiveInfo(result.Message)
 	}
+	if len(e.Metadata) > 0 {
+		result.Metadata = e.Metadata
+	}
 	if result.Message == "" {
 		result.Message = string(e.errorType)
 	}
