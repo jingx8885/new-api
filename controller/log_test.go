@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,6 +31,13 @@ type logStatResponse struct {
 	Quota int `json:"quota"`
 	Rpm   int `json:"rpm"`
 	Tpm   int `json:"tpm"`
+}
+
+type batchConsumeResponseData struct {
+	Total     int64                        `json:"total"`
+	Items     []model.Log                  `json:"items"`
+	Summary   model.BatchConsumeSummary    `json:"summary"`
+	UserStats []model.BatchConsumeUserStat `json:"user_stats"`
 }
 
 func setupLogControllerTestDB(t *testing.T) *gorm.DB {
@@ -185,6 +193,14 @@ func newLogTestContext(method string, target string) (*gin.Context, *httptest.Re
 	return ctx, recorder
 }
 
+func newLogJSONTestContext(method string, target string, body string) (*gin.Context, *httptest.ResponseRecorder) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(method, target, bytes.NewBufferString(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	return ctx, recorder
+}
+
 func decodeLogResponse[T any](t *testing.T, recorder *httptest.ResponseRecorder) T {
 	t.Helper()
 
@@ -247,5 +263,80 @@ func TestGetLogsStatMatchesConsumeQuotaForExactUsername(t *testing.T) {
 	}
 	if stat.Quota == 4549 {
 		t.Fatalf("stat unexpectedly included alice-beta records")
+	}
+}
+
+func TestGetBatchConsumeLogsReturnsSummaryAndPagedItems(t *testing.T) {
+	db := setupLogControllerTestDB(t)
+	seedLogControllerData(t, db)
+
+	ctx, recorder := newLogJSONTestContext(
+		http.MethodPost,
+		"/api/log/batch/consume",
+		`{"usernames":[" alice ","alice-beta","alice",""],"start_timestamp":1709999900,"end_timestamp":1710000600,"page":1,"page_size":2}`,
+	)
+	GetBatchConsumeLogs(ctx)
+
+	data := decodeLogResponse[batchConsumeResponseData](t, recorder)
+	if data.Total != 3 {
+		t.Fatalf("expected total 3, got %d", data.Total)
+	}
+	if len(data.Items) != 2 {
+		t.Fatalf("expected 2 paged items, got %d", len(data.Items))
+	}
+	if data.Items[0].Username != "alice-beta" || data.Items[0].CreatedAt != 1710000400 {
+		t.Fatalf("expected latest item to be alice-beta newest consume log, got %+v", data.Items[0])
+	}
+	if data.Items[0].ChannelName != "openai-main" {
+		t.Fatalf("expected channel name to be enriched, got %q", data.Items[0].ChannelName)
+	}
+	if data.Summary.Quota != 4549 {
+		t.Fatalf("expected summary quota 4549, got %d", data.Summary.Quota)
+	}
+	if data.Summary.ConsumeCount != 3 {
+		t.Fatalf("expected summary consume count 3, got %d", data.Summary.ConsumeCount)
+	}
+	if len(data.UserStats) != 2 {
+		t.Fatalf("expected 2 user stats, got %d", len(data.UserStats))
+	}
+	if data.UserStats[0].Username != "alice" || data.UserStats[0].Quota != 3550 || data.UserStats[0].ConsumeCount != 2 || data.UserStats[0].LastCreatedAt != 1710000300 {
+		t.Fatalf("unexpected alice user stat: %+v", data.UserStats[0])
+	}
+	if data.UserStats[1].Username != "alice-beta" || data.UserStats[1].Quota != 999 || data.UserStats[1].ConsumeCount != 1 {
+		t.Fatalf("unexpected alice-beta user stat: %+v", data.UserStats[1])
+	}
+}
+
+func TestGetBatchConsumeLogsRejectsTooManyUsernames(t *testing.T) {
+	setupLogControllerTestDB(t)
+
+	usernames := make([]string, 0, maxBatchConsumeUsernames+1)
+	for i := 0; i < maxBatchConsumeUsernames+1; i++ {
+		usernames = append(usernames, fmt.Sprintf("user-%d", i))
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"usernames": usernames,
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal usernames: %v", err)
+	}
+
+	ctx, recorder := newLogJSONTestContext(http.MethodPost, "/api/log/batch/consume", string(body))
+	GetBatchConsumeLogs(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 status, got %d", recorder.Code)
+	}
+
+	var response logAPIResponse
+	if err := common.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if response.Success {
+		t.Fatalf("expected failure response")
+	}
+	if response.Message == "" {
+		t.Fatalf("expected validation message for too many usernames")
 	}
 }
