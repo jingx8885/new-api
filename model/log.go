@@ -284,44 +284,8 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		return nil, 0, err
 	}
 
-	channelIds := types.NewSet[int]()
-	for _, log := range logs {
-		if log.ChannelId != 0 {
-			channelIds.Add(log.ChannelId)
-		}
-	}
-
-	if channelIds.Len() > 0 {
-		var channels []struct {
-			Id   int    `gorm:"column:id"`
-			Name string `gorm:"column:name"`
-		}
-		if common.MemoryCacheEnabled {
-			// Cache get channel
-			for _, channelId := range channelIds.Items() {
-				if cacheChannel, err := CacheGetChannel(channelId); err == nil {
-					channels = append(channels, struct {
-						Id   int    `gorm:"column:id"`
-						Name string `gorm:"column:name"`
-					}{
-						Id:   channelId,
-						Name: cacheChannel.Name,
-					})
-				}
-			}
-		} else {
-			// Bulk query channels from DB
-			if err = DB.Table("channels").Select("id, name").Where("id IN ?", channelIds.Items()).Find(&channels).Error; err != nil {
-				return logs, total, err
-			}
-		}
-		channelMap := make(map[int]string, len(channels))
-		for _, channel := range channels {
-			channelMap[channel.Id] = channel.Name
-		}
-		for i := range logs {
-			logs[i].ChannelName = channelMap[logs[i].ChannelId]
-		}
+	if err = enrichLogChannelNames(logs); err != nil {
+		return logs, total, err
 	}
 
 	return logs, total, err
@@ -378,6 +342,148 @@ type Stat struct {
 	Quota int `json:"quota"`
 	Rpm   int `json:"rpm"`
 	Tpm   int `json:"tpm"`
+}
+
+type BatchConsumeSummary struct {
+	Quota        int `json:"quota"`
+	ConsumeCount int `json:"consume_count"`
+}
+
+type BatchConsumeUserStat struct {
+	Username      string `json:"username"`
+	Quota         int    `json:"quota"`
+	ConsumeCount  int    `json:"consume_count"`
+	LastCreatedAt int64  `json:"last_created_at"`
+}
+
+type BatchConsumeResult struct {
+	Total     int64                  `json:"total"`
+	Items     []*Log                 `json:"items"`
+	Summary   BatchConsumeSummary    `json:"summary"`
+	UserStats []BatchConsumeUserStat `json:"user_stats"`
+}
+
+func GetBatchConsumeLogs(usernames []string, startTimestamp int64, endTimestamp int64, modelName string, startIdx int, num int) (result BatchConsumeResult, err error) {
+	normalizedUsernames := make([]string, 0, len(usernames))
+	dedup := make(map[string]struct{}, len(usernames))
+	for _, username := range usernames {
+		if username == "" {
+			continue
+		}
+		if _, exists := dedup[username]; exists {
+			continue
+		}
+		dedup[username] = struct{}{}
+		normalizedUsernames = append(normalizedUsernames, username)
+	}
+	if len(normalizedUsernames) == 0 {
+		result.Items = []*Log{}
+		result.UserStats = []BatchConsumeUserStat{}
+		return result, nil
+	}
+
+	tx := LOG_DB.Model(&Log{}).
+		Where("type = ?", LogTypeConsume).
+		Where("username IN ?", normalizedUsernames)
+
+	if startTimestamp != 0 {
+		tx = tx.Where("created_at >= ?", startTimestamp)
+	}
+	if endTimestamp != 0 {
+		tx = tx.Where("created_at <= ?", endTimestamp)
+	}
+	if modelName != "" {
+		modelNamePattern, patternErr := sanitizeLikePattern(modelName)
+		if patternErr != nil {
+			return result, patternErr
+		}
+		tx = tx.Where("model_name LIKE ? ESCAPE '!'", modelNamePattern)
+	}
+
+	if err = tx.Count(&result.Total).Error; err != nil {
+		return result, err
+	}
+
+	itemQuery := tx.Session(&gorm.Session{})
+	if num > 0 {
+		itemQuery = itemQuery.Limit(num).Offset(startIdx)
+	}
+	if err = itemQuery.Order("id desc").Find(&result.Items).Error; err != nil {
+		return result, err
+	}
+	if err = enrichLogChannelNames(result.Items); err != nil {
+		return result, err
+	}
+
+	var userStats []BatchConsumeUserStat
+	if err = tx.Session(&gorm.Session{}).
+		Select("username, COALESCE(SUM(quota), 0) AS quota, COUNT(*) AS consume_count, MAX(created_at) AS last_created_at").
+		Group("username").
+		Order("quota DESC, username ASC").
+		Scan(&userStats).Error; err != nil {
+		return result, err
+	}
+	result.UserStats = userStats
+
+	totalQuota := 0
+	totalConsumeCount := 0
+	for _, stat := range userStats {
+		totalQuota += stat.Quota
+		totalConsumeCount += stat.ConsumeCount
+	}
+	result.Summary = BatchConsumeSummary{
+		Quota:        totalQuota,
+		ConsumeCount: totalConsumeCount,
+	}
+	return result, nil
+}
+
+func enrichLogChannelNames(logs []*Log) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	channelIds := types.NewSet[int]()
+	for _, log := range logs {
+		if log.ChannelId != 0 {
+			channelIds.Add(log.ChannelId)
+		}
+	}
+
+	if channelIds.Len() == 0 {
+		return nil
+	}
+
+	var channels []struct {
+		Id   int    `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	if common.MemoryCacheEnabled {
+		for _, channelId := range channelIds.Items() {
+			if cacheChannel, cacheErr := CacheGetChannel(channelId); cacheErr == nil {
+				channels = append(channels, struct {
+					Id   int    `gorm:"column:id"`
+					Name string `gorm:"column:name"`
+				}{
+					Id:   channelId,
+					Name: cacheChannel.Name,
+				})
+			}
+		}
+	} else {
+		if err := DB.Table("channels").Select("id, name").Where("id IN ?", channelIds.Items()).Find(&channels).Error; err != nil {
+			return err
+		}
+	}
+
+	channelMap := make(map[int]string, len(channels))
+	for _, channel := range channels {
+		channelMap[channel.Id] = channel.Name
+	}
+	for i := range logs {
+		logs[i].ChannelName = channelMap[logs[i].ChannelId]
+	}
+	return nil
 }
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
