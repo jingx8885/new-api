@@ -3,12 +3,24 @@ package controller
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 
 	"github.com/gin-gonic/gin"
 )
+
+const maxBatchConsumeUsernames = 200
+
+type batchConsumeLogsRequest struct {
+	Usernames      []string `json:"usernames"`
+	StartTimestamp int64    `json:"start_timestamp"`
+	EndTimestamp   int64    `json:"end_timestamp"`
+	ModelName      string   `json:"model_name"`
+	Page           int      `json:"page"`
+	PageSize       int      `json:"page_size"`
+}
 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -118,6 +130,60 @@ func GetLogsStat(c *gin.Context) {
 		},
 	})
 	return
+}
+
+func GetBatchConsumeLogs(c *gin.Context) {
+	var request batchConsumeLogsRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	normalizedUsernames := make([]string, 0, len(request.Usernames))
+	dedup := make(map[string]struct{}, len(request.Usernames))
+	for _, username := range request.Usernames {
+		trimmed := strings.TrimSpace(username)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := dedup[trimmed]; exists {
+			continue
+		}
+		dedup[trimmed] = struct{}{}
+		normalizedUsernames = append(normalizedUsernames, trimmed)
+	}
+
+	if len(normalizedUsernames) > maxBatchConsumeUsernames {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "username 数量超过限制",
+		})
+		return
+	}
+
+	startIdx := 0
+	pageSize := request.PageSize
+	if pageSize > 0 {
+		page := request.Page
+		if page <= 0 {
+			page = 1
+		}
+		startIdx = (page - 1) * pageSize
+	}
+
+	result, err := model.GetBatchConsumeLogs(
+		normalizedUsernames,
+		request.StartTimestamp,
+		request.EndTimestamp,
+		request.ModelName,
+		startIdx,
+		pageSize,
+	)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
 }
 
 func GetLogsSelfStat(c *gin.Context) {
