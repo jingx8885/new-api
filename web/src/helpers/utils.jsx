@@ -28,6 +28,13 @@ import {
 import { TABLE_COMPACT_MODES_KEY } from '../constants';
 import { MOBILE_BREAKPOINT } from '../hooks/common/useIsMobile';
 
+const REQUEST_ID_REGEX = /\(request id:\s*([^)]+)\)/i;
+const SUBSCRIPTION_QUOTA_ERROR_KEYWORDS = [
+  'subscription quota limit',
+  'quota refresh',
+  'pay-as-you-go api key',
+];
+
 const HTMLToastContent = ({ htmlContent }) => {
   return <div dangerouslySetInnerHTML={{ __html: htmlContent }} />;
 };
@@ -123,7 +130,15 @@ export function showError(error) {
   console.error(error);
   if (error.message) {
     if (error.name === 'AxiosError') {
-      switch (error.response.status) {
+      const status = error.response?.status;
+      if (status === 402) {
+        const formattedError = formatErrorForDisplay(error);
+        Toast.error({
+          content: renderErrorToastContent(formattedError),
+        });
+        return;
+      }
+      switch (status) {
         case 401:
           // 清除用户状态
           localStorage.removeItem('user');
@@ -140,14 +155,151 @@ export function showError(error) {
           Toast.info('本站仅作演示之用，无服务端！');
           break;
         default:
-          Toast.error('错误：' + error.message);
+          Toast.error({
+            content: renderErrorToastContent(formatErrorForDisplay(error)),
+          });
       }
       return;
     }
-    Toast.error('错误：' + error.message);
+    Toast.error({
+      content: renderErrorToastContent(formatErrorForDisplay(error)),
+    });
   } else {
     Toast.error('错误：' + error);
   }
+}
+
+function extractRequestId(message) {
+  if (typeof message !== 'string') {
+    return '';
+  }
+  return message.match(REQUEST_ID_REGEX)?.[1]?.trim() || '';
+}
+
+function stripRequestId(message) {
+  if (typeof message !== 'string') {
+    return '';
+  }
+  return message.replace(REQUEST_ID_REGEX, '').trim();
+}
+
+function isSubscriptionQuotaLimitMessage(message) {
+  if (typeof message !== 'string') {
+    return false;
+  }
+  const lower = message.toLowerCase();
+  return SUBSCRIPTION_QUOTA_ERROR_KEYWORDS.some((keyword) =>
+    lower.includes(keyword),
+  );
+}
+
+function buildSubscriptionQuotaDisplay(rawMessage, metadata = {}) {
+  return {
+    main:
+      metadata.friendly_message ||
+      '当前套餐额度已用尽，请等待额度自动恢复，或升级套餐后重试。',
+    suggestion:
+      metadata.resolution_message ||
+      '如需立即继续使用，可改用按量付费 API Key。',
+    requestId: metadata.request_id || extractRequestId(rawMessage),
+    rawMessage: stripRequestId(rawMessage),
+  };
+}
+
+function extractAxiosResponseMessage(error) {
+  const data = error?.response?.data;
+  const openAIError = data?.error || {};
+
+  if (typeof openAIError?.metadata === 'string') {
+    try {
+      openAIError.metadata = JSON.parse(openAIError.metadata);
+    } catch (e) {}
+  }
+
+  return {
+    message:
+      openAIError?.metadata?.friendly_message ||
+      openAIError?.message ||
+      data?.message ||
+      error?.message ||
+      '未知错误',
+    metadata: openAIError?.metadata || {},
+    rawMessage:
+      openAIError?.metadata?.raw_message ||
+      openAIError?.message ||
+      data?.message ||
+      error?.message ||
+      '',
+    requestId:
+      openAIError?.metadata?.request_id ||
+      extractRequestId(openAIError?.message) ||
+      extractRequestId(data?.message) ||
+      extractRequestId(error?.message),
+  };
+}
+
+export function formatErrorForDisplay(error) {
+  if (error?.name === 'AxiosError') {
+    const responseInfo = extractAxiosResponseMessage(error);
+    if (
+      error?.response?.status === 402 &&
+      (responseInfo.metadata?.friendly_message ||
+        isSubscriptionQuotaLimitMessage(
+          responseInfo.rawMessage || responseInfo.message,
+        ))
+    ) {
+      return buildSubscriptionQuotaDisplay(
+        responseInfo.rawMessage || responseInfo.message,
+        responseInfo.metadata,
+      );
+    }
+
+    return {
+      main: responseInfo.message,
+      suggestion: '',
+      requestId: responseInfo.requestId,
+      rawMessage: responseInfo.rawMessage,
+    };
+  }
+
+  if (error?.message) {
+    return {
+      main: error.message,
+      suggestion: '',
+      requestId: extractRequestId(error.message),
+      rawMessage: stripRequestId(error.message),
+    };
+  }
+
+  const message = typeof error === 'string' ? error : String(error);
+  return {
+    main: message,
+    suggestion: '',
+    requestId: extractRequestId(message),
+    rawMessage: stripRequestId(message),
+  };
+}
+
+function renderErrorToastContent(formattedError) {
+  const main = formattedError?.main || '未知错误';
+  const suggestion = formattedError?.suggestion;
+  const requestId = formattedError?.requestId;
+
+  return (
+    <div>
+      <div>{`错误：${main}`}</div>
+      {suggestion ? (
+        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
+          {suggestion}
+        </div>
+      ) : null}
+      {requestId ? (
+        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
+          {`请求 ID: ${requestId}`}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function showWarning(message) {
@@ -715,7 +867,9 @@ export const calculateModelPrice = ({
         ? formatTokenPrice(inputRatioPriceUSD * Number(record.cache_ratio))
         : null,
       createCachePrice: hasRatioValue(record.create_cache_ratio)
-        ? formatTokenPrice(inputRatioPriceUSD * Number(record.create_cache_ratio))
+        ? formatTokenPrice(
+            inputRatioPriceUSD * Number(record.create_cache_ratio),
+          )
         : null,
       imagePrice: hasRatioValue(record.image_ratio)
         ? formatTokenPrice(inputRatioPriceUSD * Number(record.image_ratio))
@@ -761,11 +915,7 @@ export const calculateModelPrice = ({
   };
 };
 
-export const getModelPriceItems = (
-  priceData,
-  t,
-  quotaDisplayType = 'USD',
-) => {
+export const getModelPriceItems = (priceData, t, quotaDisplayType = 'USD') => {
   if (priceData.isPerToken) {
     if (quotaDisplayType === 'TOKENS' || priceData.isTokensDisplay) {
       return [
@@ -861,7 +1011,10 @@ export const getModelPriceItems = (
         value: priceData.audioOutputPrice,
         suffix: unitSuffix,
       },
-    ].filter((item) => item.value !== null && item.value !== undefined && item.value !== '');
+    ].filter(
+      (item) =>
+        item.value !== null && item.value !== undefined && item.value !== '',
+    );
   }
 
   return [
@@ -871,7 +1024,10 @@ export const getModelPriceItems = (
       value: priceData.price,
       suffix: ` / ${t('次')}`,
     },
-  ].filter((item) => item.value !== null && item.value !== undefined && item.value !== '');
+  ].filter(
+    (item) =>
+      item.value !== null && item.value !== undefined && item.value !== '',
+  );
 };
 
 // 格式化价格信息（用于卡片视图）
