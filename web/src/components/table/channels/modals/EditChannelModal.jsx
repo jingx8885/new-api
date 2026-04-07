@@ -1023,6 +1023,7 @@ const EditChannelModal = (props) => {
         (data.weight && data.weight !== 0) ||
         (data.proxy && data.proxy.trim()) ||
         (data.system_prompt && data.system_prompt.trim()) ||
+        (data.channel_rpm_limit && data.channel_rpm_limit !== 0) ||
         data.thinking_to_content ||
         data.pass_through_body_enabled ||
         data.force_format ||
@@ -2514,6 +2515,7 @@ const EditChannelModal = (props) => {
                   )}
 
                   <Form.Switch field='thinking_to_content' label={t('思考内容转换')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelSettingsChange('thinking_to_content', value)} extraText={t('将 reasoning_content 转换为 <think> 标签拼接到内容中')} />
+                  <Form.InputNumber field='channel_rpm_limit' label={t('渠道 RPM 限制')} min={0} step={1} suffix={t('次/分钟')} onChange={(value) => handleChannelSettingsChange('channel_rpm_limit', Number(value || 0))} extraText={t('每个渠道每分钟允许的最大请求数，0 表示不限制')} />
                   <Form.Switch field='pass_through_body_enabled' label={t('透传请求体')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelSettingsChange('pass_through_body_enabled', value)} extraText={t('启用请求体透传功能')} />
 
                   <Form.Input field='proxy' label={t('代理地址')} placeholder={t('例如: socks5://user:pass@host:port')} onChange={(value) => handleChannelSettingsChange('proxy', value)} showClear extraText={t('用于配置网络代理，支持 socks5 协议')} />
