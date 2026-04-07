@@ -3701,7 +3701,6 @@ const EditChannelModal = (props) => {
                           transition: 'transform 0.2s',
                         }}
                       />
-                    )}
                     </div>
                   </div>
                 )}
