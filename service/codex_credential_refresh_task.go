@@ -123,6 +123,9 @@ func runCodexCredentialAutoRefreshOnce() {
 
 			refreshed++
 			logger.LogInfo(ctx, fmt.Sprintf("codex credential auto-refresh: channel_id=%d name=%s refreshed, expires_at=%s", ch.Id, ch.Name, newKey.Expired))
+			if ch.Status == common.ChannelStatusAutoDisabled {
+				logger.LogInfo(ctx, fmt.Sprintf("codex credential auto-refresh: channel_id=%d name=%s refreshed while auto-disabled; waiting for next successful channel test to re-enable", ch.Id, ch.Name))
+			}
 		}
 	}
 

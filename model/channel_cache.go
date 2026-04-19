@@ -222,6 +222,67 @@ func CacheGetChannelInfo(id int) (*ChannelInfo, error) {
 	return &c.ChannelInfo, nil
 }
 
+func cacheRemoveChannelFromSelectionLocked(id int) {
+	for group, model2channels := range group2model2channels {
+		for model, channels := range model2channels {
+			for i, channelId := range channels {
+				if channelId == id {
+					group2model2channels[group][model] = append(channels[:i], channels[i+1:]...)
+					break
+				}
+			}
+		}
+	}
+}
+
+func cacheSortChannelIDsLocked(channelIDs []int) {
+	sort.Slice(channelIDs, func(i, j int) bool {
+		left, leftOK := channelsIDM[channelIDs[i]]
+		right, rightOK := channelsIDM[channelIDs[j]]
+		if !leftOK || !rightOK {
+			return channelIDs[i] < channelIDs[j]
+		}
+		return left.GetPriority() > right.GetPriority()
+	})
+}
+
+func cacheAddChannelToSelectionLocked(channel *Channel) {
+	if channel == nil {
+		return
+	}
+
+	groups := strings.Split(channel.Group, ",")
+	models := strings.Split(channel.Models, ",")
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		if _, ok := group2model2channels[group]; !ok {
+			group2model2channels[group] = make(map[string][]int)
+		}
+		for _, model := range models {
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
+			}
+			channelIDs := group2model2channels[group][model]
+			exists := false
+			for _, channelID := range channelIDs {
+				if channelID == channel.Id {
+					exists = true
+					break
+				}
+			}
+			if !exists {
+				channelIDs = append(channelIDs, channel.Id)
+			}
+			cacheSortChannelIDsLocked(channelIDs)
+			group2model2channels[group][model] = channelIDs
+		}
+	}
+}
+
 func CacheUpdateChannelStatus(id int, status int) {
 	if !common.MemoryCacheEnabled {
 		return
@@ -230,19 +291,9 @@ func CacheUpdateChannelStatus(id int, status int) {
 	defer channelSyncLock.Unlock()
 	if channel, ok := channelsIDM[id]; ok {
 		channel.Status = status
-	}
-	if status != common.ChannelStatusEnabled {
-		// delete the channel from group2model2channels
-		for group, model2channels := range group2model2channels {
-			for model, channels := range model2channels {
-				for i, channelId := range channels {
-					if channelId == id {
-						// remove the channel from the slice
-						group2model2channels[group][model] = append(channels[:i], channels[i+1:]...)
-						break
-					}
-				}
-			}
+		cacheRemoveChannelFromSelectionLocked(id)
+		if status == common.ChannelStatusEnabled {
+			cacheAddChannelToSelectionLocked(channel)
 		}
 	}
 }

@@ -37,9 +37,11 @@ import (
 )
 
 type testResult struct {
-	context     *gin.Context
-	localErr    error
-	newAPIError *types.NewAPIError
+	context        *gin.Context
+	localErr       error
+	newAPIError    *types.NewAPIError
+	testedModel    string
+	testedEndpoint string
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
@@ -499,9 +501,11 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 	})
 	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, string(respBody)))
 	return testResult{
-		context:     c,
-		localErr:    nil,
-		newAPIError: nil,
+		context:        c,
+		localErr:       nil,
+		newAPIError:    nil,
+		testedModel:    testModel,
+		testedEndpoint: endpointType,
 	}
 }
 
@@ -853,7 +857,17 @@ func testAllChannels(notify bool) error {
 
 			// enable channel
 			if !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {
-				service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name)
+				if service.EnableChannel(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.Name) {
+					common.SysLog(fmt.Sprintf(
+						"channel auto-recovered after successful test: channel_id=%d name=%s model=%s endpoint_type=%s from_status=%d to_status=%d",
+						channel.Id,
+						channel.Name,
+						result.testedModel,
+						result.testedEndpoint,
+						channel.Status,
+						common.ChannelStatusEnabled,
+					))
+				}
 			}
 
 			channel.UpdateResponseTime(milliseconds)

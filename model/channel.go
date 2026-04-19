@@ -570,6 +570,13 @@ func CleanupChannelPollingLocks() {
 	})
 }
 
+func setChannelStatusInfo(channel *Channel, reason string) {
+	info := channel.GetOtherInfo()
+	info["status_reason"] = reason
+	info["status_time"] = common.GetTimestamp()
+	channel.SetOtherInfo(info)
+}
+
 func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason string) {
 	keys := channel.GetKeys()
 	if len(keys) == 0 {
@@ -587,6 +594,16 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 		}
 		if status == common.ChannelStatusEnabled {
 			delete(channel.ChannelInfo.MultiKeyStatusList, keyIndex)
+			if channel.ChannelInfo.MultiKeyDisabledReason != nil {
+				delete(channel.ChannelInfo.MultiKeyDisabledReason, keyIndex)
+			}
+			if channel.ChannelInfo.MultiKeyDisabledTime != nil {
+				delete(channel.ChannelInfo.MultiKeyDisabledTime, keyIndex)
+			}
+			if len(channel.ChannelInfo.MultiKeyStatusList) < channel.ChannelInfo.MultiKeySize {
+				channel.Status = common.ChannelStatusEnabled
+				setChannelStatusInfo(channel, "")
+			}
 		} else {
 			channel.ChannelInfo.MultiKeyStatusList[keyIndex] = status
 			if channel.ChannelInfo.MultiKeyDisabledReason == nil {
@@ -600,10 +617,7 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 		}
 		if len(channel.ChannelInfo.MultiKeyStatusList) >= channel.ChannelInfo.MultiKeySize {
 			channel.Status = common.ChannelStatusAutoDisabled
-			info := channel.GetOtherInfo()
-			info["status_reason"] = "All keys are disabled"
-			info["status_time"] = common.GetTimestamp()
-			channel.SetOtherInfo(info)
+			setChannelStatusInfo(channel, "All keys are disabled")
 		}
 	}
 }
@@ -663,10 +677,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 				shouldUpdateAbilities = true
 			}
 		} else {
-			info := channel.GetOtherInfo()
-			info["status_reason"] = reason
-			info["status_time"] = common.GetTimestamp()
-			channel.SetOtherInfo(info)
+			setChannelStatusInfo(channel, reason)
 			channel.Status = status
 			shouldUpdateAbilities = true
 		}
@@ -680,12 +691,24 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 }
 
 func EnableChannelByTag(tag string) error {
-	err := DB.Model(&Channel{}).Where("tag = ?", tag).Update("status", common.ChannelStatusEnabled).Error
+	var channels []*Channel
+	err := DB.Where("tag = ?", tag).Find(&channels).Error
 	if err != nil {
 		return err
 	}
-	err = UpdateAbilityStatusByTag(tag, true)
-	return err
+	for _, channel := range channels {
+		if channel.Status == common.ChannelStatusEnabled {
+			setChannelStatusInfo(channel, "")
+			if err := channel.SaveWithoutKey(); err != nil {
+				return err
+			}
+			continue
+		}
+		if !UpdateChannelStatus(channel.Id, "", common.ChannelStatusEnabled, "") {
+			return fmt.Errorf("failed to enable channel by tag: channel_id=%d", channel.Id)
+		}
+	}
+	return nil
 }
 
 func DisableChannelByTag(tag string) error {
