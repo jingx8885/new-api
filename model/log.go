@@ -295,7 +295,7 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string) (logs []*Log, total int64, err error) {
+func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel string, group string, groupMode string, requestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB
@@ -321,12 +321,11 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	if endTimestamp != 0 {
 		tx = tx.Where("logs.created_at <= ?", endTimestamp)
 	}
-	if channel != 0 {
-		tx = tx.Where("logs.channel_id = ?", channel)
+	tx, err = applyChannelFilter(tx, "logs.channel_id", channel)
+	if err != nil {
+		return nil, 0, err
 	}
-	if group != "" {
-		tx = tx.Where("logs."+logGroupCol+" = ?", group)
-	}
+	tx = applyLogGroupFilter(tx, group, groupMode)
 	err = tx.Model(&Log{}).Count(&total).Error
 	if err != nil {
 		return nil, 0, err
@@ -335,6 +334,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	if err != nil {
 		return nil, 0, err
 	}
+	rewriteLogsGroupForCurrentUserMode(logs, group, groupMode)
 
 	channelIds := types.NewSet[int]()
 	for _, log := range logs {
@@ -381,7 +381,7 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 
 const logSearchCountLimit = 10000
 
-func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string) (logs []*Log, total int64, err error) {
+func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, groupMode string, requestId string) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB.Where("logs.user_id = ?", userId)
@@ -408,9 +408,7 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 	if endTimestamp != 0 {
 		tx = tx.Where("logs.created_at <= ?", endTimestamp)
 	}
-	if group != "" {
-		tx = tx.Where("logs."+logGroupCol+" = ?", group)
-	}
+	tx = applyLogGroupFilter(tx, group, groupMode)
 	err = tx.Model(&Log{}).Limit(logSearchCountLimit).Count(&total).Error
 	if err != nil {
 		common.SysError("failed to count user logs: " + err.Error())
@@ -421,6 +419,7 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 		common.SysError("failed to search user logs: " + err.Error())
 		return nil, 0, errors.New("查询日志失败")
 	}
+	rewriteLogsGroupForCurrentUserMode(logs, group, groupMode)
 
 	formatUserLogs(logs, startIdx)
 	return logs, total, err
@@ -432,48 +431,50 @@ type Stat struct {
 	Tpm   int `json:"tpm"`
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
-	tx := LOG_DB.Table("logs").Select("sum(quota) quota")
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel string, group string, groupMode string) (stat Stat, err error) {
+	tx := LOG_DB.Table("logs").Select("sum(logs.quota) quota")
 
 	// 为rpm和tpm创建单独的查询
-	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, sum(prompt_tokens) + sum(completion_tokens) tpm")
+	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, sum(logs.prompt_tokens) + sum(logs.completion_tokens) tpm")
 
 	if username != "" {
-		tx = tx.Where("username = ?", username)
-		rpmTpmQuery = rpmTpmQuery.Where("username = ?", username)
+		tx = tx.Where("logs.username = ?", username)
+		rpmTpmQuery = rpmTpmQuery.Where("logs.username = ?", username)
 	}
 	if tokenName != "" {
-		tx = tx.Where("token_name = ?", tokenName)
-		rpmTpmQuery = rpmTpmQuery.Where("token_name = ?", tokenName)
+		tx = tx.Where("logs.token_name = ?", tokenName)
+		rpmTpmQuery = rpmTpmQuery.Where("logs.token_name = ?", tokenName)
 	}
 	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
+		tx = tx.Where("logs.created_at >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
+		tx = tx.Where("logs.created_at <= ?", endTimestamp)
 	}
 	if modelName != "" {
 		modelNamePattern, err := sanitizeLikePattern(modelName)
 		if err != nil {
 			return stat, err
 		}
-		tx = tx.Where("model_name LIKE ? ESCAPE '!'", modelNamePattern)
-		rpmTpmQuery = rpmTpmQuery.Where("model_name LIKE ? ESCAPE '!'", modelNamePattern)
+		tx = tx.Where("logs.model_name LIKE ? ESCAPE '!'", modelNamePattern)
+		rpmTpmQuery = rpmTpmQuery.Where("logs.model_name LIKE ? ESCAPE '!'", modelNamePattern)
 	}
-	if channel != 0 {
-		tx = tx.Where("channel_id = ?", channel)
-		rpmTpmQuery = rpmTpmQuery.Where("channel_id = ?", channel)
+	tx, err = applyChannelFilter(tx, "channel_id", channel)
+	if err != nil {
+		return stat, err
 	}
-	if group != "" {
-		tx = tx.Where(logGroupCol+" = ?", group)
-		rpmTpmQuery = rpmTpmQuery.Where(logGroupCol+" = ?", group)
+	rpmTpmQuery, err = applyChannelFilter(rpmTpmQuery, "channel_id", channel)
+	if err != nil {
+		return stat, err
 	}
+	tx = applyLogGroupFilter(tx, group, groupMode)
+	rpmTpmQuery = applyLogGroupFilter(rpmTpmQuery, group, groupMode)
 
-	tx = tx.Where("type = ?", LogTypeConsume)
-	rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
+	tx = tx.Where("logs.type = ?", LogTypeConsume)
+	rpmTpmQuery = rpmTpmQuery.Where("logs.type = ?", LogTypeConsume)
 
 	// 只统计最近60秒的rpm和tpm
-	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())
+	rpmTpmQuery = rpmTpmQuery.Where("logs.created_at >= ?", time.Now().Add(-60*time.Second).Unix())
 
 	// 执行查询
 	if err := tx.Scan(&stat).Error; err != nil {

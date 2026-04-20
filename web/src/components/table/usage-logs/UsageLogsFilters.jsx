@@ -107,7 +107,7 @@ const LogsFilters = ({
               <Form.Input
                 field='channel'
                 prefix={<IconSearch />}
-                placeholder={t('渠道 ID')}
+                placeholder={t('渠道 ID，支持 5,8-10')}
                 showClear
                 pure
                 size='small'
