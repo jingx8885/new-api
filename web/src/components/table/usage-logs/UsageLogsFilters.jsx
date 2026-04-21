@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Button, Form } from '@douyinfe/semi-ui';
-import { IconSearch } from '@douyinfe/semi-icons';
+import { Button, Form, Tooltip } from '@douyinfe/semi-ui';
+import { IconSearch, IconHelpCircle } from '@douyinfe/semi-icons';
 
 import { DATE_RANGE_PRESETS } from '../../../constants/console.constants';
 
@@ -84,14 +84,26 @@ const LogsFilters = ({
             size='small'
           />
 
-          <Form.Input
-            field='group'
-            prefix={<IconSearch />}
-            placeholder={t('分组')}
-            showClear
-            pure
-            size='small'
-          />
+          <div className='flex flex-col gap-1'>
+            <Form.Input
+              field='group'
+              prefix={<IconSearch />}
+              placeholder={t('分组')}
+              showClear
+              pure
+              size='small'
+            />
+            <div className='flex items-center gap-1'>
+              <Form.Checkbox field='group_mode' noLabel pure>
+                {t('按当前分组')}
+              </Form.Checkbox>
+              <Tooltip
+                content={t('勾选：按用户当前所在分组查询（分组变更后历史记录归入新分组）；不勾选：按日志记录时的原始分组查询')}
+              >
+                <IconHelpCircle size='small' style={{ color: 'var(--semi-color-text-2)', cursor: 'help' }} />
+              </Tooltip>
+            </div>
+          </div>
 
           <Form.Input
             field='request_id'
