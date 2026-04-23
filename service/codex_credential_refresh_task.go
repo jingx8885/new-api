@@ -28,6 +28,10 @@ var (
 	codexCredentialRefreshRunning atomic.Bool
 )
 
+func shouldAutoRefreshCodexChannelStatus(status int) bool {
+	return status == common.ChannelStatusEnabled || status == common.ChannelStatusAutoDisabled
+}
+
 func StartCodexCredentialAutoRefreshTask() {
 	codexCredentialRefreshOnce.Do(func() {
 		if !common.IsMasterNode {
