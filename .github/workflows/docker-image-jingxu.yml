@@ -22,9 +22,19 @@ env:
   IMAGE_NAME: jingxu888512321/new-api
 
 jobs:
-  build-and-push:
-    name: Build and push Docker image
-    runs-on: ubuntu-latest
+  build-single-arch:
+    name: Build and push (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
 
@@ -32,32 +42,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve tags
-        id: tags
+      - name: Resolve tag
+        id: tag
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-            PUSH_LATEST="${{ inputs.push_latest }}"
-          else
-            TAG="main-${GITHUB_SHA::7}"
-            PUSH_LATEST="true"
-          fi
-
+          TAG="${{ inputs.tag }}"
           if ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "Invalid Docker tag: $TAG" >&2
             exit 1
           fi
-
-          {
-            echo 'tags<<EOF'
-            echo "${IMAGE_NAME}:${TAG}"
-            if [ "$PUSH_LATEST" = "true" ]; then
-              echo "${IMAGE_NAME}:latest"
-            fi
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
           echo "$TAG" > VERSION
 
       - name: Set up Docker Buildx
@@ -69,21 +63,66 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push arch image
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}-${{ matrix.arch }}
+            ${{ env.IMAGE_NAME }}:latest-${{ matrix.arch }}
+          cache-from: type=gha,scope=jingxu-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=jingxu-${{ matrix.arch }}
           provenance: false
           sbom: false
+
+  create-manifest:
+    name: Create multi-arch manifest
+    needs: [build-single-arch]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag }}"
+          if ! [[ "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid Docker tag: $TAG" >&2
+            exit 1
+          fi
+          echo "value=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create requested tag manifest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }} \
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}-amd64 \
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}-arm64
+
+      - name: Create latest manifest
+        if: ${{ inputs.push_latest }}
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_NAME }}:latest \
+            ${{ env.IMAGE_NAME }}:latest-amd64 \
+            ${{ env.IMAGE_NAME }}:latest-arm64
 
       - name: Summary
         run: |
           echo '### Published Docker image' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo '${{ steps.tags.outputs.tags }}' >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.value }}' >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ inputs.push_latest }}' = 'true' ]; then
+            echo '${{ env.IMAGE_NAME }}:latest' >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo '```' >> "$GITHUB_STEP_SUMMARY"
