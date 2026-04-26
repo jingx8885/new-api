@@ -1,0 +1,25 @@
+{
+  "defaults": {
+    "mode": "append",
+    "test": true,
+    "endpoint_type": "",
+    "stream": false
+  },
+  "channels": [
+    {
+      "id": 1,
+      "models": ["gpt-4o-mini", "gpt-4.1-mini"]
+    },
+    {
+      "ids": [2, 3],
+      "models": ["claude-3-5-sonnet-latest"],
+      "test_models": ["claude-3-5-sonnet-latest"],
+      "endpoint_type": "chat"
+    },
+    {
+      "tag": "openai",
+      "models": ["o4-mini"],
+      "stream": true
+    }
+  ]
+}

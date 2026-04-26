@@ -64,6 +64,15 @@ export const useChannelsData = () => {
   const [enableTagMode, setEnableTagMode] = useState(false);
   const [showBatchSetTag, setShowBatchSetTag] = useState(false);
   const [batchSetTagValue, setBatchSetTagValue] = useState('');
+  const [showBatchModelConfig, setShowBatchModelConfig] = useState(false);
+  const [batchModelConfigValue, setBatchModelConfigValue] = useState('');
+  const [batchModelConfigMode, setBatchModelConfigMode] = useState('append');
+  const [batchModelConfigTest, setBatchModelConfigTest] = useState(true);
+  const [batchModelConfigStream, setBatchModelConfigStream] = useState(false);
+  const [batchModelConfigEndpointType, setBatchModelConfigEndpointType] =
+    useState('');
+  const [batchModelConfigResults, setBatchModelConfigResults] = useState([]);
+  const [batchModelConfigLoading, setBatchModelConfigLoading] = useState(false);
   const [compactMode, setCompactMode] = useTableCompactMode('channels');
 
   // Column visibility states
@@ -668,6 +677,20 @@ export const useChannelsData = () => {
   };
 
   // Batch operations
+  const normalizeBatchModelConfigInput = (value) => {
+    const seen = new Set();
+    return value
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter((item) => {
+        if (!item || seen.has(item)) {
+          return false;
+        }
+        seen.add(item);
+        return true;
+      });
+  };
+
   const batchSetChannelTag = async () => {
     if (selectedChannels.length === 0) {
       showError(t('请先选择要设置标签的渠道！'));
@@ -690,6 +713,63 @@ export const useChannelsData = () => {
       setShowBatchSetTag(false);
     } else {
       showError(res.data.message);
+    }
+  };
+
+  const batchConfigChannelModels = async (dryRun = false) => {
+    if (selectedChannels.length === 0) {
+      showError(t('请先选择要配置模型的渠道！'));
+      return;
+    }
+    const models = normalizeBatchModelConfigInput(batchModelConfigValue);
+    if (models.length === 0) {
+      showError(t('请输入要配置的模型！'));
+      return;
+    }
+    setBatchModelConfigLoading(true);
+    try {
+      const ids = selectedChannels.map((channel) => channel.id);
+      const res = await API.post('/api/channel/batch/models', {
+        ids,
+        models,
+        mode: batchModelConfigMode,
+        dry_run: dryRun,
+        test: batchModelConfigTest,
+        stream: batchModelConfigStream,
+        endpoint_type: batchModelConfigEndpointType,
+      });
+      const { success, message, data } = res.data;
+      if (!success) {
+        showError(message);
+        return;
+      }
+      const results = data?.results || [];
+      setBatchModelConfigResults(results);
+      const failedUpdates = data?.failed_updates || 0;
+      const failedTests = data?.failed_tests || 0;
+      if (failedUpdates > 0 || failedTests > 0) {
+        showError(
+          t(
+            '批量模型配置完成，但存在失败项：配置失败 ${updates} 个，测试失败 ${tests} 个',
+          )
+            .replace('${updates}', failedUpdates)
+            .replace('${tests}', failedTests),
+        );
+      } else if (dryRun) {
+        showSuccess(t('预演完成，未修改渠道配置'));
+      } else {
+        showSuccess(
+          t('批量模型配置完成，共处理 ${count} 个渠道').replace(
+            '${count}',
+            data?.channel_count || results.length,
+          ),
+        );
+        await refresh();
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBatchModelConfigLoading(false);
     }
   };
 
@@ -1164,6 +1244,20 @@ export const useChannelsData = () => {
     setShowBatchSetTag,
     batchSetTagValue,
     setBatchSetTagValue,
+    showBatchModelConfig,
+    setShowBatchModelConfig,
+    batchModelConfigValue,
+    setBatchModelConfigValue,
+    batchModelConfigMode,
+    setBatchModelConfigMode,
+    batchModelConfigTest,
+    setBatchModelConfigTest,
+    batchModelConfigStream,
+    setBatchModelConfigStream,
+    batchModelConfigEndpointType,
+    setBatchModelConfigEndpointType,
+    batchModelConfigResults,
+    batchModelConfigLoading,
 
     // Column states
     visibleColumns,
@@ -1228,6 +1322,7 @@ export const useChannelsData = () => {
     closeEdit,
     handleRow,
     batchSetChannelTag,
+    batchConfigChannelModels,
     batchDeleteChannels,
     testAllChannels,
     deleteAllDisabledChannels,

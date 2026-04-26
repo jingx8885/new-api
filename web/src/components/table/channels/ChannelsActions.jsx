@@ -26,12 +26,15 @@ import {
   Typography,
   Select,
 } from '@douyinfe/semi-ui';
+import { IconPlus, IconDelete, IconSetting } from '@douyinfe/semi-icons';
 import CompactModeToggle from '../../common/ui/CompactModeToggle';
 
 const ChannelsActions = ({
   enableBatchDelete,
+  selectedChannels,
   batchDeleteChannels,
   setShowBatchSetTag,
+  setShowBatchModelConfig,
   testAllChannels,
   fixChannelsAbilities,
   updateAllChannelsBalance,
@@ -66,8 +69,9 @@ const ChannelsActions = ({
         <div className='flex flex-wrap md:flex-nowrap items-center gap-2 w-full md:w-auto order-2 md:order-1'>
           <Button
             size='small'
-            disabled={!enableBatchDelete}
+            disabled={!enableBatchDelete || selectedChannels.length === 0}
             type='danger'
+            icon={<IconDelete />}
             className='w-full md:w-auto'
             onClick={() => {
               Modal.confirm({
@@ -82,12 +86,25 @@ const ChannelsActions = ({
 
           <Button
             size='small'
-            disabled={!enableBatchDelete}
+            disabled={!enableBatchDelete || selectedChannels.length === 0}
             type='tertiary'
+            icon={<IconSetting />}
             onClick={() => setShowBatchSetTag(true)}
             className='w-full md:w-auto'
           >
             {t('批量设置标签')}
+          </Button>
+
+          <Button
+            size='small'
+            disabled={!enableBatchDelete || selectedChannels.length === 0}
+            type='primary'
+            theme='light'
+            icon={<IconPlus />}
+            onClick={() => setShowBatchModelConfig(true)}
+            className='w-full md:w-auto'
+          >
+            {t('批量配置模型')}
           </Button>
 
           <Dropdown
